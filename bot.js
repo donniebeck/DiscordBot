@@ -57,7 +57,7 @@ client.on('messageCreate', async (message) => {
 
 async function handlePlayCommand(message, args) {
     const guildId = message.guild.id;
-    const serverQueue = queue.get(message.guild.id);
+    const serverQueue = queue.get(guildId);
 
     console.log(`Received play command from ${message.author.username} in guild ${message.guild.name}`);
 
@@ -72,7 +72,6 @@ async function handlePlayCommand(message, args) {
 
     if (!serverQueue) {
         console.log(`No existing queue in guild ${message.guild.name}, creating new one`);
-        // Create queue if it doesn't exist
         const queueConstruct = {
             textChannel: message.channel,
             voiceChannel: message.member.voice.channel,
@@ -80,22 +79,15 @@ async function handlePlayCommand(message, args) {
             player: createAudioPlayer(),
             songs: [],
             playing: true,
-            idle: true, // Set the idle flag to true initially
+            idle: true,
             timeoutHandle: null,
             lastPlayTimestamp: null
         };
-
         queue.set(guildId, queueConstruct);
         queueConstruct.songs.push(song);
 
-        try {
-            await connectAndPlay(queueConstruct);
-            console.log(`Connected and playing in guild ${message.guild.name}`);
-        } catch (err) {
-            console.error(`Failed to connect to voice channel in guild ${message.guild.name}: ${err}`);
-            console.error(err);
-            queue.delete(guildId);
-            return message.channel.send('Error connecting to the voice channel.');
+        if (await connect(queueConstruct)) {
+            playSong(guildId, song);
         }
     } else {
         serverQueue.songs.push(song);
@@ -103,40 +95,31 @@ async function handlePlayCommand(message, args) {
         message.channel.send(`${song.title} has been added to the queue by ${song.requester}`);
         if (serverQueue.idle) {
             console.log(`Queue was idle, now playing ${song.title} in guild ${message.guild.name}`);
-            playSong(guildId, serverQueue.songs[0]);
+            playSong(guildId, song);
         }
     }
 }
 
-async function connectAndPlay(queueConstruct) {
-
-    console.log(`Attempting to connect to voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
-
-    if (!queueConstruct.connection || queueConstruct.connection.state.status !== 'connected') {
-        try {
-            const connection = joinVoiceChannel({
-                channelId: queueConstruct.voiceChannel.id,
-                guildId: queueConstruct.voiceChannel.guild.id,
-                adapterCreator: queueConstruct.voiceChannel.guild.voiceAdapterCreator,
-            });
-            queueConstruct.connection = connection;
-
-            console.log(`Successfully connected to voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
-
-            connection.subscribe(queueConstruct.player);
-
-            console.log(`Subscribed player to voice connection in guild ${queueConstruct.voiceChannel.guild.name}`);
-
-            playSong(queueConstruct.voiceChannel.guild.id, queueConstruct.songs[0]);
-        } catch (error) {
-
-            console.error(`Failed to connect to voice channel in guild ${queueConstruct.voiceChannel.guild.name}: ${error}`);
-
-            queue.delete(queueConstruct.voiceChannel.guild.id);
-            queueConstruct.textChannel.send('Could not join the voice channel.');
-        } 
-    } else {
-        console.log(`Already connected to voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
+async function connect(queueConstruct) {
+    if (queueConstruct.connection && queueConstruct.connection.state.status === 'ready') {
+        console.log(`Already connected to the voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
+        return true;
+    }
+    
+    console.log(`Attempting to connect to the voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
+    try {
+        const connection = joinVoiceChannel({
+            channelId: queueConstruct.voiceChannel.id,
+            guildId: queueConstruct.voiceChannel.guild.id,
+            adapterCreator: queueConstruct.voiceChannel.guild.voiceAdapterCreator,
+        });
+        queueConstruct.connection = connection;
+        console.log(`Successfully connected to the voice channel in guild ${queueConstruct.voiceChannel.guild.name}`);
+        return true;
+    } catch (error) {
+        console.error(`Failed to connect to the voice channel in guild ${queueConstruct.voiceChannel.guild.name}: ${error}`);
+        queueConstruct.textChannel.send('Could not join the voice channel.');
+        return false;
     }
 }
 
@@ -146,53 +129,29 @@ async function playSong(guildId, song, startTime = 0) {
     console.log(`Starting playSong for guild ${guildId}: song = ${song ? song.title : 'None'}`);
 
     if (!song) {
-
         console.log(`No song provided to playSong in guild ${guildId}, passing to no song scenario.`);
-
         handleNoSong(serverQueue, guildId);
         return;
     }
 
+    // Ensure the connection is ready before attempting to play the song
     if (!serverQueue.connection || serverQueue.connection.state.status !== 'ready') {
-
-        console.log(`Connection not ready in guild ${guildId}, attempting to connect.`);
-
-        try {
-            await connectAndPlay(serverQueue);
-
-            console.log(`Connection established and ready in guild ${guildId}`);
-
-        } catch (error) {
-
-            console.error(`Error connecting to voice channel in guild ${guildId}: ${error}`);
-
-            serverQueue.textChannel.send('Could not connect to the voice channel.');
-            return;
-        }
+        console.log(`Connection not ready or not present in guild ${guildId}, cannot play song.`);
+        serverQueue.textChannel.send('Cannot play song as the connection to the voice channel is not ready.');
+        return;
     }
-    serverQueue.attempts = 0;
-
-    console.log(`Attempts reset to 0 for guild ${guildId}.`);
 
     resetInactivityTimeout(serverQueue);
-
     console.log(`Inactivity timeout reset for guild ${guildId}.`);
 
     try {
         const resource = await setupAudioResource(song, startTime);
-
         console.log(`Audio resource setup complete for song ${song.title} in guild ${guildId}.`);
-
         serverQueue.player.play(resource);
         managePlayerListeners(serverQueue, guildId);
-
         console.log(`Song ${song.title} is now playing in guild ${guildId}.`);
-
     } catch (error) {
-
         console.error(`Failed to play song ${song.title} in guild ${guildId}: ${error}`);
-
-        console.error(`Failed to play song ${song.title}: ${error}`);
         retryOrSkipSong(serverQueue, guildId, song);
     }
 }
@@ -230,14 +189,18 @@ async function setupAudioResource(song, startTime) {
 }
 
 function managePlayerListeners(serverQueue, guildId) {
+    // Remove all listeners to avoid multiple triggers
     serverQueue.player.removeAllListeners(AudioPlayerStatus.Playing);
+    serverQueue.player.removeAllListeners(AudioPlayerStatus.Idle);
+
     serverQueue.player.on(AudioPlayerStatus.Playing, () => {
         serverQueue.lastPlayTimestamp = Date.now();
         serverQueue.idle = false;
+        console.log(`Playback has started in guild ${guildId}.`);
     });
 
-    serverQueue.player.removeAllListeners(AudioPlayerStatus.Idle);
     serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+        console.log(`Playback has stopped or finished in guild ${guildId}.`);
         handlePlayerIdle(serverQueue, guildId);
     });
 }
@@ -273,6 +236,25 @@ function retryOrSkipSong(serverQueue, guildId, song) {
 
             handleNoSong(serverQueue, guildId);
         }
+    }
+}
+
+function handlePlayerIdle(serverQueue, guildId) {
+    console.log(`Player is idle in guild ${guildId}.`);
+
+    // Remove the finished song from the queue
+    serverQueue.songs.shift();
+    
+    // Reset the attempt counter for the next song
+    serverQueue.attempts = 0;
+
+    // Check if there are more songs in the queue
+    if (serverQueue.songs.length > 0) {
+        console.log(`Continuing to the next song in the queue for guild ${guildId}.`);
+        playSong(guildId, serverQueue.songs[0]);
+    } else {
+        console.log(`No more songs left in the queue for guild ${guildId}. Handling no song scenario.`);
+        handleNoSong(serverQueue, guildId);  // Handle end of queue, such as disconnecting after a delay
     }
 }
 
