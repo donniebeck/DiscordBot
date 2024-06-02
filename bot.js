@@ -201,10 +201,15 @@ async function handlePlayCommand(message, args) {
         }
         playSong(message.guild, queueConstruct.songs[0]);
     } else {
+        const wasQueueEmpty = serverQueue.songs.length === 0;
         for (const song of songs) {
             addToQueue(serverQueue, song);
         }
+        if (wasQueueEmpty) {
+            playSong(message.guild, serverQueue.songs[0]);
+        }
     }
+
 
     if (isPlaylistUrl) {
         message.channel.send(`${songs.length} songs from the playlist have been added to the queue!`);
@@ -295,6 +300,9 @@ function handleClearCommand(message) {
 
     // Clear the song list
     serverQueue.songs = [];
+
+    // Reset the inactivity timeout
+    resetTimeout(serverQueue);
 
     message.channel.send('The queue has been cleared.');
 }
