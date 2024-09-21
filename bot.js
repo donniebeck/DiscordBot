@@ -14,7 +14,6 @@ const client = new Client({
 
 const queue = new Map();
 const INACTIVITY_TIMEOUT = 300000; // 5 minutes
-
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
 });
