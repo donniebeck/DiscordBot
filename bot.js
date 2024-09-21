@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType, AudioPlayerStatus } = require('@discordjs/voice');
-const play = require('play-dl');
+const play = require('@rablonkk/play-dl');
 const isUrl = require('is-url');
 
 const client = new Client({
